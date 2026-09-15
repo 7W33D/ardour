@@ -55,8 +55,11 @@ private:
 
 	// Analysis
 	void run_impulse_analysis ();
+	bool impulse_is_dirty ();
 	void signal_collect_callback (ARDOUR::BufferSet *, ARDOUR::BufferSet *);
 	float _signal_analysis_running;
+	std::vector<float> _param_cache;
+	bool _impulse_dirty;
 
 	// Drawing
 	virtual void on_hide ();

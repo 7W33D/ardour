@@ -71,6 +71,7 @@ PluginEqGui::PluginEqGui (std::shared_ptr<ARDOUR::PluginInsert> pluginInsert)
 	, _signal_output_fft (0)
 	, _plugin_insert (pluginInsert)
 	, _pointer_in_area_xpos (-1)
+	, _impulse_dirty (true)
 {
 	_signal_analysis_running = false;
 	_samplerate = ARDOUR_UI::instance()->the_session()->sample_rate();
@@ -193,7 +194,7 @@ PluginEqGui::start_listening ()
 	}
 
 	_plugin->activate ();
-	set_buffer_size (8192, 16384);
+	set_buffer_size (8192, 4096);
 	_block_size = 0; // re-initialize the plugin next time.
 
 	/* Connect the realtime signal collection callback */
@@ -232,7 +233,7 @@ void
 PluginEqGui::start_updating ()
 {
 	if (!_update_connection.connected() && get_visible()) {
-		_update_connection = Glib::signal_timeout().connect (sigc::mem_fun (*this, &PluginEqGui::timeout_callback), 250, Glib::PRIORITY_DEFAULT_IDLE);
+		_update_connection = Glib::signal_timeout().connect (sigc::mem_fun (*this, &PluginEqGui::timeout_callback), 100, Glib::PRIORITY_DEFAULT_IDLE);
 	}
 }
 
@@ -327,6 +328,34 @@ PluginEqGui::set_buffer_size (uint32_t size, uint32_t signal_size)
 
 	_bufferset.set_count (acount);
 	_collect_bufferset.set_count (ccount);
+
+	_impulse_dirty = true;
+}
+
+bool
+PluginEqGui::impulse_is_dirty ()
+{
+	uint32_t n = _plugin->parameter_count ();
+
+	if (_param_cache.size () != n) {
+		_param_cache.assign (n, NAN);
+		_impulse_dirty = true;
+	}
+
+	for (uint32_t i = 0; i < n; ++i) {
+		if (!_plugin->parameter_is_control (i) || !_plugin->parameter_is_input (i)) {
+			continue;
+		}
+		float v = _plugin->get_parameter (i);
+		if (v != _param_cache[i]) {
+			_param_cache[i] = v;
+			_impulse_dirty = true;
+		}
+	}
+
+	bool d = _impulse_dirty;
+	_impulse_dirty = false;
+	return d;
 }
 
 void
@@ -346,10 +375,12 @@ PluginEqGui::timeout_callback ()
 {
 	if (!_signal_analysis_running) {
 		_signal_analysis_running = true;
-		_plugin_insert -> collect_signal_for_analysis (_signal_buffer_size);
+		_plugin_insert->collect_signal_for_analysis (_signal_buffer_size);
 	}
 
-	run_impulse_analysis ();
+	if (impulse_is_dirty ()) {
+		run_impulse_analysis ();
+	}
 	return true;
 }
 
