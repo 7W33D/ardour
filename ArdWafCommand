@@ -1,0 +1,4 @@
+./waf configure \
+	--strict --prefix=/usr --configdir=/etc --ptformat \
+	--with-backends=jack,alsa,pulseaudio,dummy 
+	--libjack=weak --optimize --cxx17
