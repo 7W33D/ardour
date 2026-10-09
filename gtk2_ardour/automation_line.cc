@@ -110,6 +110,8 @@ AutomationLine::AutomationLine (const string&                   name,
 	, _parent_group (parent)
 	, _drag_base (drag_base)
 	, _offset (0)
+	, _drag_final_index (0)
+	, _inf_recovery_val (0)
 	, _maximum_time (timepos_t::max (al->time_domain()))
 	, _fill (false)
 	, _desc (desc)
@@ -727,7 +729,7 @@ AutomationLine::dt_to_dx (timepos_t const & pos, timecnt_t const & dt)
  *  @return x position and y fraction that were actually used (once clamped).
  */
 pair<float, float>
-AutomationLine::drag_motion (timecnt_t const & pdt, float fraction, bool ignore_x, bool with_push, uint32_t& final_index)
+AutomationLine::drag_motion (timecnt_t const & pdt, float fraction, bool ignore_x, bool with_push)
 {
 	if (_drag_points.empty()) {
 		return pair<float, float> (fraction, _desc.is_linear () ? 0.0f : 1.0f);
@@ -804,6 +806,8 @@ AutomationLine::drag_motion (timecnt_t const & pdt, float fraction, bool ignore_
 		view_to_model_coord_y (value0);
 		view_to_model_coord_y (value1);
 		delta_value = compute_delta (value0, value1);
+		/* store absolute value in case we need to recover from -inf */
+		_inf_recovery_val = value1;
 	}
 
 	/* special case -inf */
@@ -835,9 +839,9 @@ AutomationLine::drag_motion (timecnt_t const & pdt, float fraction, bool ignore_
 		}
 
 		if (with_push) {
-			final_index = contiguous_points.back()->back()->view_index () + 1;
+			_drag_final_index = contiguous_points.back()->back()->view_index () + 1;
 			ControlPoint* p;
-			uint32_t i = final_index;
+			uint32_t i = _drag_final_index;
 
 			while ((p = nth (i)) != 0 && p->can_slide()) {
 
@@ -875,7 +879,7 @@ AutomationLine::drag_motion (timecnt_t const & pdt, float fraction, bool ignore_
 
 /** Should be called to indicate the end of a drag */
 void
-AutomationLine::end_drag (bool with_push, uint32_t final_index)
+AutomationLine::end_drag (bool with_push)
 {
 	if (!_drag_had_movement) {
 		return;
@@ -886,7 +890,7 @@ AutomationLine::end_drag (bool with_push, uint32_t final_index)
 
 	if (with_push) {
 		ControlPoint* p;
-		uint32_t i = final_index;
+		uint32_t i = _drag_final_index;
 		while ((p = nth (i)) != 0 && p->can_slide()) {
 			moved = sync_model_with_view_point (*p) || moved;
 			++i;
@@ -1605,8 +1609,7 @@ AutomationLine::apply_delta (double& val, double delta) const
 {
 	if (val == 0 && !_desc.is_linear () && delta >= 1.0) {
 		/* recover from -inf */
-		val = 1.0 / _height;
-		view_to_model_coord_y (val);
+		val = _inf_recovery_val;
 		return;
 	}
 	val = _desc.apply_delta (val, delta);

@@ -281,6 +281,7 @@ get_usb_device (uint16_t vendor_id, uint16_t product_id, libusb_device** device)
 		}
 		if (desc.idVendor == vendor_id && desc.idProduct == product_id) {
 			*device = dev;
+			libusb_ref_device(dev);
 			break;
 		}
 	}
@@ -323,6 +324,7 @@ ContourDesignControlProtocol::acquire_device ()
 	}
 
 	err = libusb_open (dev, &_dev_handle);
+	libusb_unref_device (dev);
 	if (err != LIBUSB_SUCCESS) {
 		return err;
 	}
@@ -369,9 +371,18 @@ ContourDesignControlProtocol::release_device ()
 		return;
 	}
 
-	libusb_close (_dev_handle);
-	libusb_free_transfer (_usb_transfer);
+
+	if (_usb_transfer) {
+		int lusbCancelled = libusb_cancel_transfer (_usb_transfer);
+		while ( (_usb_transfer->status != LIBUSB_TRANSFER_CANCELLED) && lusbCancelled != LIBUSB_ERROR_NOT_FOUND){
+			libusb_handle_events(0);
+		}
+		libusb_free_transfer (_usb_transfer);
+	}
+
 	libusb_release_interface (_dev_handle, 0);
+	libusb_close (_dev_handle);
+
 	_usb_transfer = 0;
 	_dev_handle = 0;
 }

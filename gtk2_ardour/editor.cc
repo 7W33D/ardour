@@ -325,9 +325,7 @@ Editor::Editor ()
 	, _visible_track_count (-1)
 	,  toolbar_selection_clock_table (2,3)
 	,  automation_mode_button (_("mode"))
-	, _all_region_actions_sensitized (false)
 	, _ignore_region_action (false)
-	, _last_region_menu_was_main (false)
 	, _track_selection_change_without_scroll (false)
 	, _editor_track_selection_change_without_scroll (false)
 	, _section_box (nullptr)
@@ -383,6 +381,7 @@ Editor::Editor ()
 	, _visible_marker_types (all_marker_types)
 	, _visible_range_types (all_range_types)
 	, _midi_inspector (nullptr)
+	, midi_inspector_scrolled_window (nullptr)
 	, xcursor (nullptr)
 {
 	/* we are a singleton */
@@ -455,8 +454,6 @@ Editor::Editor ()
 	selection->TracksChanged.connect (sigc::mem_fun(*this, &Editor::track_selection_changed));
 
 	ZoomChanged.connect (sigc::mem_fun (*this, &Editor::update_section_rects));
-
-	editor_regions_selection_changed_connection = selection->RegionsChanged.connect (sigc::mem_fun(*this, &Editor::region_selection_changed));
 
 	selection->MarkersChanged.connect (sigc::mem_fun(*this, &Editor::marker_selection_changed));
 
@@ -701,10 +698,10 @@ Editor::Editor ()
 	 * one). So ... fall back to C API.
 	 */
 
-	Gtk::ScrolledWindow* sw = wrap (GTK_SCROLLED_WINDOW (gtk_scrolled_window_new (nullptr, nullptr)));
-	sw->set_policy (Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
-	sw->add (*_midi_inspector);
-	add_notebook_page (_("MIDI Tools"), _("MIDI Tools"), *sw);
+	midi_inspector_scrolled_window = wrap (GTK_SCROLLED_WINDOW (gtk_scrolled_window_new (nullptr, nullptr)));
+	midi_inspector_scrolled_window->set_policy (Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
+	midi_inspector_scrolled_window->add (*_midi_inspector);
+	add_notebook_page (_("MIDI Tools"), _("MIDI Tools"), *midi_inspector_scrolled_window);
 
 	_notebook_tab2.set_index (4);
 
@@ -780,7 +777,6 @@ Editor::Editor ()
 	TimeAxisView::CatchDeletion.connect (*this, invalidator (*this), std::bind (&Editor::timeaxisview_deleted, this, _1), gui_context());
 
 	_ignore_region_action = false;
-	_last_region_menu_was_main = false;
 
 	_show_marker_lines = false;
 
@@ -941,10 +937,6 @@ Editor::catch_vanishing_regionview (RegionView *rv)
 	if (entered_regionview == rv) {
 		set_entered_regionview (0);
 	}
-
-	if (!_all_region_actions_sensitized) {
-		sensitize_all_region_actions (true);
-	}
 }
 
 void
@@ -964,12 +956,7 @@ Editor::set_entered_regionview (RegionView* rv)
 		entered_regionview->entered ();
 	}
 
-	if (!_all_region_actions_sensitized && _last_region_menu_was_main) {
-		/* This RegionView entry might have changed what region actions
-		   are allowed, so sensitize them all in case a key is pressed.
-		*/
-		sensitize_all_region_actions (true);
-	}
+	sensitize_the_right_region_actions (false);
 
 	if (rv) {
 		set_entered_track (&rv->get_time_axis_view());
@@ -1665,9 +1652,7 @@ Editor::popup_track_context_menu (int button, int32_t time, ItemType item_type, 
 	   in the menu.
 	*/
 	sensitize_the_right_region_actions (false);
-	_last_region_menu_was_main = false;
 
-	menu->signal_hide().connect (sigc::bind (sigc::mem_fun (*this, &Editor::sensitize_all_region_actions), true));
 	menu->popup (button, time);
 }
 
@@ -4114,7 +4099,7 @@ Editor::_get_preferred_edit_position (EditIgnoreOption ignore, bool from_context
 				break;
 			}
 		}
-		/* fallthrough */
+		[[fallthrough]];
 
 	default:
 	case EditAtMouse:

@@ -80,6 +80,7 @@
 #include "pbd/debug.h"
 #include "pbd/enumwriter.h"
 #include "pbd/error.h"
+#include "pbd/no_state.h"
 #include "pbd/file_utils.h"
 #include "pbd/pathexpand.h"
 #include "pbd/pthread_utils.h"
@@ -1475,10 +1476,19 @@ Session::export_route_state (std::shared_ptr<RouteList> rl, const string& path, 
 		 */
 		child = node->add_child ("Playlists"); // SessionPlaylists::add_state
 		for (PlaylistSet::const_iterator i = playlists.begin(); i != playlists.end(); ++i) {
-			child->add_child_nocopy ((*i)->get_state ());
+
+			try {
+				child->add_child_nocopy ((*i)->get_state ());
+			} catch (no_state const & ns) {
+				continue;
+			}
+
 			std::shared_ptr<RegionList> prl = (*i)->region_list ();
-			for (RegionList::const_iterator s = prl->begin(); s != prl->end(); ++s) {
-				const Region::SourceList& sl = (*s)->sources ();
+			for (auto const & r : *prl) {
+				if (r->transient()) {
+					continue;
+				}
+				const Region::SourceList& sl = r->sources ();
 				for (Region::SourceList::const_iterator sli = sl.begin(); sli != sl.end(); ++sli) {
 					sources.insert (*sli);
 				}
@@ -1487,6 +1497,9 @@ Session::export_route_state (std::shared_ptr<RouteList> rl, const string& path, 
 
 		child = node->add_child ("Sources");
 		for (SourceSet::const_iterator i = sources.begin(); i != sources.end(); ++i) {
+			if ((*i)->transient()) {
+				continue;
+			}
 			child->add_child_nocopy ((*i)->get_state ());
 			std::shared_ptr<FileSource> fs = std::dynamic_pointer_cast<FileSource> (*i);
 			if (fs) {
@@ -1826,7 +1839,7 @@ XMLNode&
 Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, bool only_used_assets) const
 {
 	LocaleGuard lg;
-	XMLNode* node = new XMLNode("Session");
+	XMLNode* node = new XMLNode (X_("Session"));
 	XMLNode* child;
 
 	PBD::Unwinder<bool> uw (Automatable::skip_saving_automation, save_template);
@@ -1958,7 +1971,11 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 			collect_sources_of_this_snapshot (sources_used_by_this_snapshot, false);
 		}
 
-		for (SourceMap::const_iterator siter = sources.begin(); siter != sources.end(); ++siter) {
+		for (auto const & [id,src] : sources) {
+
+			if (src->transient()) {
+				continue;
+			}
 
 			/* Don't save information about non-file Sources, or
 			 * about file sources that are empty
@@ -1966,7 +1983,7 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 			 */
 			std::shared_ptr<FileSource> fs;
 
-			if ((fs = std::dynamic_pointer_cast<FileSource> (siter->second)) == 0) {
+			if ((fs = std::dynamic_pointer_cast<FileSource> (src)) == 0) {
 				continue;
 			}
 
@@ -1995,12 +2012,12 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 				   2022) we use const_cast.
 				*/
 
-				if (const_cast<Session*>(this)->maybe_copy_midifile (snapshot_type, siter->second, child)) {
+				if (const_cast<Session*>(this)->maybe_copy_midifile (snapshot_type, src, child)) {
 					continue; /* state already added to child */
 				}
 			}
 
-			child->add_child_nocopy (siter->second->get_state());
+			child->add_child_nocopy (src->get_state());
 		}
 	}
 
@@ -2013,8 +2030,12 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 
 		if (!only_used_assets) {
 			const RegionFactory::RegionMap& region_map (RegionFactory::all_regions());
-			for (RegionFactory::RegionMap::const_iterator i = region_map.begin(); i != region_map.end(); ++i) {
-				std::shared_ptr<Region> r = i->second;
+			for (auto const & [id,r] : region_map) {
+
+				if (r->transient()) {
+					continue;
+				}
+
 				/* regions must have sources */
 				assert (r->sources().size() > 0 && r->master_sources().size() > 0);
 				/* only store regions not attached to playlists */
@@ -2037,7 +2058,10 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 			std::set<std::shared_ptr<Region>> tr;
 			{
 				std::shared_ptr<RouteList const> rl = routes.reader();
-				for (auto const& r : *rl) {
+				for (auto const & r : *rl) {
+					if (r->is_transient()) {
+						continue;
+					}
 					std::shared_ptr<TriggerBox> tb = r->triggerbox ();
 					if (tb) {
 						tb->used_regions (tr);
@@ -2047,8 +2071,11 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 
 			auto const& used_pl (_playlists->get_used ());
 			const RegionFactory::RegionMap& region_map (RegionFactory::all_regions());
-			for (RegionFactory::RegionMap::const_iterator i = region_map.begin(); i != region_map.end(); ++i) {
-				std::shared_ptr<Region> r = i->second;
+			for (auto const & [id,r] : region_map) {
+
+				if (r->transient()) {
+					continue;
+				}
 
 				if (tr.find (r) != tr.end()) {
 					child->add_child_nocopy (r->get_state ());
@@ -2154,12 +2181,17 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 		RouteList xml_node_order (*r);
 		xml_node_order.sort (cmp);
 
-		for (RouteList::const_iterator i = xml_node_order.begin(); i != xml_node_order.end(); ++i) {
-			if (!(*i)->is_auditioner()) {
+		for (auto const & r : xml_node_order) {
+
+			if (r->is_transient()) {
+				continue;
+			}
+
+			if (!r->is_auditioner()) {
 				if (save_template) {
-					child->add_child_nocopy ((*i)->get_template());
+					child->add_child_nocopy (r->get_template());
 				} else {
-					child->add_child_nocopy ((*i)->get_state());
+					child->add_child_nocopy (r->get_state());
 				}
 			}
 		}
@@ -3465,7 +3497,7 @@ retry:
 
 				case 3:
 					no_questions_about_missing_files = true;
-					/* fallthrough */
+					[[fallthrough]];
 
 				case -1:
 				default:
@@ -5080,7 +5112,7 @@ Session::config_changed (std::string p, bool ours)
 #ifndef HAVE_RF64_RIFF
 		switch (config.get_native_file_header_format ()) {
 			case MBWF:
-				/* fallthrough */
+				[[fallthrough]];
 			case RF64_WAV:
 				config.set_native_file_header_format (RF64);
 				return;
