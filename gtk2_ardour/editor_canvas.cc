@@ -46,6 +46,7 @@
 #include "canvas/debug.h"
 
 #include "ardour_ui.h"
+#include "audio_region_view.h"
 #include "automation_time_axis.h"
 #include "control_point.h"
 #include "editor.h"
@@ -86,7 +87,6 @@ Editor::initialize_canvas ()
 	_track_canvas = _track_canvas_viewport->canvas ();
 
 	_track_canvas->set_background_color (UIConfiguration::instance().color ("arrange base"));
-	_track_canvas->use_nsglview (UIConfiguration::instance().get_nsgl_view_mode () == NSGLHiRes);
 #ifdef __APPLE__
 	// as of april 12 2024 on X Window and Windows, setting this to false
 	// causes redraw errors, but not on macOS as far as we can tell
@@ -1442,6 +1442,38 @@ Editor::which_canvas_cursor(ItemType type) const
 			break;
 		case NoteItem:
 			cursor = _cursors->grabber_note;
+			break;
+		case SelectionItem:
+			{
+				/* Indicate if AutomationRangeDrag is possible */
+				double x, y;
+				get_pointer_position (x, y);
+				pair<TimeAxisView*, int> tvp = trackview_by_y_position (y, false);
+
+				if (dynamic_cast<AutomationTimeAxisView*> (tvp.first)) {
+					/* automation track */
+					cursor = _cursors->up_down;
+				} else if (tvp.first) {
+					/* audio region fx line */
+					RegionSelection regions;
+					TrackViewList tracks;
+					samplepos_t sample;
+					bool in_track_canvas; /* ignored */
+
+					tracks.push_back(tvp.first);
+					mouse_sample (sample, in_track_canvas);
+					timepos_t where (sample);
+					get_regions_at (regions, where, tracks);
+
+					if (!regions.empty () && dynamic_cast<AudioRegionView*> (regions.front ())) {
+						cursor = _cursors->up_down;
+					}
+				}
+				break;
+			}
+		case VelocityItem:
+			cursor = _cursors->up_down;
+			break;
 		default:
 			break;
 		}

@@ -397,7 +397,7 @@ ControlProtocolManager::discover_control_protocols ()
 {
 	vector<std::string> cp_modules;
 
-#ifdef COMPILER_MSVC
+#if defined COMPILER_MSVC && !defined WAF_BUILD
 	/**
 	 * Different build targets (Debug / Release etc) use different versions
 	 * of the 'C' runtime (which can't be 'mixed & matched'). Therefore, in
@@ -642,12 +642,12 @@ ControlProtocolManager::midi_connectivity_established (bool yn)
 void
 ControlProtocolManager::probe_midi_control_protocols ()
 {
-	PBD::RWLock::ReaderLock lm (_protocols_lock);
 	if (!Config->get_auto_enable_surfaces ()) {
 		return;
 	}
 	for (auto const& cpi : _control_protocol_info) {
 		/* Note: manual teardown deletes the descriptor */
+		PBD::RWLock::ReaderLock lm (_protocols_lock);
 		if (!cpi->descriptor) {
 			cpi->automatic = false;
 			continue;
@@ -671,9 +671,11 @@ ControlProtocolManager::probe_midi_control_protocols ()
 					}
 				}
 			}
+			lm.release();
 			activate (*cpi, device_config);
 		} else if (active && cpi->automatic && !found) {
 			cpi->automatic = false;
+			lm.release();
 			deactivate (*cpi);
 			/* allow to auto-enable again */
 			if (!cpi->descriptor) {
@@ -734,6 +736,23 @@ ControlProtocolManager::stripable_selection_changed (StripableNotificationListPt
 		for (auto const& p : _control_protocols) {
 			DEBUG_TRACE (DEBUG::Selection, string_compose ("selection change notification for surface \"%1\"\n", p->name ()));
 			p->stripable_selection_changed ();
+		}
+	}
+}
+
+void
+ControlProtocolManager::do_surface_callback (bool only_once, SurfaceCallbackType type, void* arg)
+{
+	PBD::RWLock::ReaderLock lm (_protocols_lock);
+	for (auto const& p : _control_protocols) {
+		ControlProtocol::SurfaceCallback sc = p->surface_callback;
+		if (sc) {
+			lm.release ();
+			(p->*sc) (type, arg);
+			if (only_once) {
+				return;
+			}
+			lm.acquire ();
 		}
 	}
 }

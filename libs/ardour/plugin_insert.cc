@@ -696,7 +696,7 @@ PluginInsert::automation_run (samplepos_t start, pframes_t nframes, bool only_ac
 				sampleoffset_t start_off = (start_pos - loop_start) % looplen;
 				start_pos = loop_start + start_off;
 			}
-			samplecnt_t move = std::min ((samplecnt_t)nframes, loop_end - start_pos);
+			samplecnt_t move = std::min (remain, loop_end - start_pos);
 
 			Automatable::automation_run (start_pos, move, only_active);
 			remain -= move;
@@ -966,7 +966,7 @@ PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t e
 					timepos_t end_time (end);
 					Evoral::ControlEvent next_event (end_time, 0.0f);
 					find_next_ac_event (*ci, now, end_time, next_event);
-					if (next_event.when >= end_time) {
+					if (next_event.when.samples() + 1 >= end_time.samples()) {
 						break;
 					}
 					now = next_event.when;
@@ -980,10 +980,12 @@ PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t e
 #endif
 #if 1
 				/* 3. VST3: set value at cycle-end */
-				val = c.list()->rt_safe_eval (timepos_t (end), valid);
-				if (valid) {
-					for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
-						(*i)->set_parameter (clist->parameter().id(), val, end - start);
+				if (end > start + 1) {
+					val = c.list()->rt_safe_eval (timepos_t (end - 1), valid);
+					if (valid) {
+						for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
+							(*i)->set_parameter (clist->parameter().id(), val, end - 1 - start);
+						}
 					}
 				}
 #endif

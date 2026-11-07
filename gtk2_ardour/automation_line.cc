@@ -62,6 +62,7 @@
 #include "control_point.h"
 #include "editing_context.h"
 #include "gui_thread.h"
+#include "keyboard.h"
 #include "rgb_macros.h"
 #include "public_editor.h"
 #include "selection.h"
@@ -110,7 +111,6 @@ AutomationLine::AutomationLine (const string&                   name,
 	, _parent_group (parent)
 	, _drag_base (drag_base)
 	, _offset (0)
-	, _drag_final_index (0)
 	, _inf_recovery_val (0)
 	, _maximum_time (timepos_t::max (al->time_domain()))
 	, _fill (false)
@@ -777,9 +777,16 @@ AutomationLine::drag_motion (timecnt_t const & pdt, float fraction, bool ignore_
 		_drag_had_movement = true;
 	}
 
-	/* OK, now on to the stuff related to *this* motion event. First, for
-	 * each contiguous range, figure out the maximum x-axis motion we are
-	 * allowed (because of neighbouring points that are not moving.
+	/* OK, now on to the stuff related to *this* motion event. First,
+	 * ensure we are not moving a x-locked point within a contiguous range
+	 */
+
+	if (!_drag_points.front()->can_slide() || !_drag_points.back()->can_slide()) {
+		dt = timecnt_t (0);
+	}
+
+	/* Then, figure out the maximum x-axis motion we are allowed
+	 * (because of neighbouring points that are not moving).
 	 *
 	 * if we are moving forwards with push, we don't need to do this,
 	 * since all later points will move too.
@@ -789,12 +796,6 @@ AutomationLine::drag_motion (timecnt_t const & pdt, float fraction, bool ignore_
 		const timepos_t line_limit = maximum_time() + _offset;
 		for (auto const & ccp : contiguous_points){
 			dt = ccp->clamp_dt (dt, line_limit);
-		}
-		if (!_drag_points.front()->can_slide() || !_drag_points.back()->can_slide()) {
-			/* ControlPointDrag::motion only checks if grabbed point can slide
-			 * ensure we are not moving a x-locked point within a contiguous range
-			 */
-			dt = timecnt_t (0);
 		}
 	}
 
@@ -839,15 +840,31 @@ AutomationLine::drag_motion (timecnt_t const & pdt, float fraction, bool ignore_
 		}
 
 		if (with_push) {
-			_drag_final_index = contiguous_points.back()->back()->view_index () + 1;
+			/* move all pushed points, between contiguous sets of selected points
+			 * and after the last selected point
+			 */
 			ControlPoint* p;
-			uint32_t i = _drag_final_index;
+			vector<CCP>::iterator next_ccp;
+			uint32_t start;
+			uint32_t end;
 
-			while ((p = nth (i)) != 0 && p->can_slide()) {
+			for (vector<CCP>::iterator ccp = contiguous_points.begin(); ccp != contiguous_points.end(); ++ccp) {
 
-				p->move_to (dt_to_dx ((*p->model())->when, dt), p->get_y(), ControlPoint::Full);
-				reset_line_coords (*p);
-				++i;
+				if ((*ccp) != contiguous_points.back()) {
+					next_ccp = ccp + 1;
+					start = (*ccp)->back()->view_index () + 1;
+					end = (*next_ccp)->front()->view_index () - 1;
+				} else {
+					start = (*ccp)->back()->view_index () + 1;
+					end = control_points.size() - 1;
+				}
+
+				for (uint32_t i = start; i <= end; i++) {
+					if ((p = nth (i)) != 0 && p->can_slide()) {
+						p->move_to (dt_to_dx ((*p->model())->when, dt), p->get_y(), ControlPoint::Full);
+						reset_line_coords (*p);
+					}
+				}
 			}
 		}
 
@@ -889,11 +906,30 @@ AutomationLine::end_drag (bool with_push)
 	bool moved = sync_model_with_view_points (_drag_points);
 
 	if (with_push) {
+		/* sync all pushed points, between contiguous sets of selected points
+		 * and after the last selected point
+		 */
 		ControlPoint* p;
-		uint32_t i = _drag_final_index;
-		while ((p = nth (i)) != 0 && p->can_slide()) {
-			moved = sync_model_with_view_point (*p) || moved;
-			++i;
+		vector<CCP>::iterator next_ccp;
+		uint32_t start;
+		uint32_t end;
+
+		for (vector<CCP>::iterator ccp = contiguous_points.begin(); ccp != contiguous_points.end(); ++ccp) {
+
+				if ((*ccp) != contiguous_points.back()) {
+					next_ccp = ccp + 1;
+					start = (*ccp)->back()->view_index () + 1;
+					end = (*next_ccp)->front()->view_index () - 1;
+				} else {
+					start = (*ccp)->back()->view_index () + 1;
+					end = control_points.size() - 1;
+				}
+
+				for (uint32_t i = start; i <= end; i++) {
+					if ((p = nth (i)) != 0 && p->can_slide()) {
+						moved = sync_model_with_view_point (*p) || moved;
+					}
+				}
 		}
 	}
 
@@ -911,6 +947,13 @@ AutomationLine::end_drag (bool with_push)
 
 	_editing_context.session()->set_dirty ();
 	did_push = false;
+
+	if (with_push) {
+		/* we may have pushed some points beyond the region's end and these will be truncated,
+		 * make sure the we're up to date.
+		 */
+		reset();
+	}
 
 	contiguous_points.clear ();
 }
@@ -1797,7 +1840,9 @@ AutomationLine::add (std::shared_ptr<AutomationControl> control, GdkEvent* event
 
 	_editing_context.snap_to_with_modifier (when, event);
 
-	if (!from_kbd && (UIConfiguration::instance().get_new_automation_points_on_lane() || control->list()->size () == 0)) {
+	bool ignore_y = ArdourKeyboard::indicates_constraint (event->button.state) || UIConfiguration::instance().get_new_automation_points_on_lane();
+
+	if (!from_kbd && (ignore_y || control->list()->size () == 0)) {
 		if (control->list()->size () == 0) {
 			y = control->get_value ();
 		} else {

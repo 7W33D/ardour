@@ -739,6 +739,7 @@ static int showInvalidation = 0;
 
   if (!GDK_WINDOW_IS_MAPPED (gdk_window) && ((gdk_quartz_osx_version() >= GDK_OSX_LEOPARD) && [self wantsLayer]))
     {
+      fprintf (stderr, "Window is not mapped, blank with bg color.\n");
       /* If the window is not yet mapped, clip_region_with_children
        * will be empty causing the usual code below to draw nothing.
        * To not see garbage on the screen, we draw an aesthetic color
@@ -840,6 +841,22 @@ static int showInvalidation = 0;
   _gdk_window_process_updates_recurse (gdk_window, region);
   impl->in_paint_rect_count--;
 
+  if (impl->offscreen) {
+    //fprintf(stderr, "offscreen blit %d,%d %d,%d\n", private->x, private->y, private->width, private->height);
+    CGContextRef cg;
+    CGContextFlush(impl->offscreen);
+    CGImageRef img = CGBitmapContextCreateImage(impl->offscreen);
+    [NSGraphicsContext saveGraphicsState];
+    cg = [[NSGraphicsContext currentContext] CGContext];
+    CGRect rect = CGRectMake (
+      0,
+      0,
+      private->width, private->height);
+    CGContextDrawImage(cg, rect, img);
+    CGContextFlush(cg);
+    [NSGraphicsContext restoreGraphicsState];
+    CFRelease(img);
+  }
 
 #ifndef NDEBUG
   if (showInvalidation) {
@@ -986,6 +1003,32 @@ static int showInvalidation = 0;
 		  userData: nil
 		  assumeInside: NO];
 #endif
+
+  if (impl->offscreen) {
+	CFRelease(impl->offscreen);
+	impl->offscreen = NULL;
+
+	CALayer *layer = [impl->view layer];
+
+	CGFloat scale = 1.0;
+	scale = [impl->toplevel backingScaleFactor];
+	int w = rect.size.width * scale;
+	int h = rect.size.height * scale;
+	int stride = (w * 4 + 255) & ~255;
+#ifndef NDEBUG
+	fprintf (stderr, "Update Tracking: scale: %f %d x %d @ %d\n", scale, w, h, stride);
+#endif
+	CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+	impl->offscreen = CGBitmapContextCreate(NULL,
+		w, h,
+		8,
+		stride,
+		colorSpace,
+		kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+	CGContextScaleCTM(impl->offscreen, scale, scale);
+	CGColorSpaceRelease(colorSpace);
+  }
+
 }
 
 -(void)viewDidMoveToWindow

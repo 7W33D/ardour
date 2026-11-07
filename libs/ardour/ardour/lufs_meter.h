@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016,2023 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016-2026 Robin Gareus <robin@gareus.org>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,6 +24,7 @@
 #include <map>
 
 #include "pbd/stack_allocator.h"
+#include "pbd/ringbuffer.h"
 
 #include "ardour/libardour_visibility.h"
 
@@ -32,7 +33,7 @@ namespace ARDOUR {
 class LIBARDOUR_API LUFSMeter
 {
 public:
-	LUFSMeter (double samplerate, uint32_t n_channels);
+	LUFSMeter (double samplerate, uint32_t n_channels, bool with_hist = false);
 	LUFSMeter (LUFSMeter const& other) = delete;
 	~LUFSMeter ();
 
@@ -49,9 +50,27 @@ public:
 	float dbtp ();
 	float max_dbtp () const;
 
+	struct LUHistory {
+		float integrated;
+		float short_term;
+		float momentary;
+	};
+
+	size_t hist_read (LUHistory* dest, size_t cnt) {
+		return _rb.read (dest, cnt);
+	}
+
+	size_t hist_read_space () const {
+		return _rb.read_space ();
+	}
+
+	void host_increment_read_idx (size_t cnt) {
+		_rb.increment_read_idx (cnt);
+	}
 
 private:
 	void init ();
+	void clear ();
 
 	float process (float const** data, const uint32_t n_samples, uint32_t offset);
 	float sumfrag (uint32_t) const;
@@ -59,6 +78,7 @@ private:
 	void  calc_true_peak (float const** data, const uint32_t n_samples);
 	float upsample_x4 (int chn, float const x);
 	float upsample_x2 (int chn, float const x);
+
 	std::function< float(int, const float) > upsample;
 
 	const float _g[5] = { 1.0, 1.0, 1.0, 1.41, 1.41 };
@@ -96,6 +116,7 @@ private:
 	float    _max_dbtp;
 
 	std::atomic<bool> _rst_dbtp;
+	std::atomic<bool> _rst_lufs;
 
 #if defined(_MSC_VER)
 	typedef std::map<int, uint32_t> History;
@@ -117,6 +138,10 @@ private:
 
 	FilterState _fst[5];
 	float*      _z[5];
+
+	bool _lu_history;
+
+	PBD::RingBuffer<LUHistory> _rb;
 };
 
 } // namespace ARDOUR
