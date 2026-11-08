@@ -788,19 +788,30 @@ RegionSlipContentsDrag::motion (GdkEvent* event, bool first_move)
 		for (auto & sd : draggables) {
 			sd->region ()->clear_changes ();
 			sd->drag_start (); // this allows the region to draw itself 'transparently' while we drag it
+			/* Prevent region property changes during drag
+			 * as ARDOUR:Session::butler_transport_work might slow down waveform update
+			 */
+			sd->region ()->suspend_property_changes ();
+			AudioRegionView* arv = dynamic_cast<AudioRegionView*> (sd);
+			if (Config->get_automation_follows_content() && arv) {
+				arv->set_envelope_shifting (true);
+			}
 		}
 
 	} else {
 		for (auto & sd : draggables) {
 			timecnt_t  slippage = adjusted_current_time (event, false).distance (last_pointer_time ());
 			sd->region()->move_start (slippage);
+			/* fake region property change to update waveforms while property changes are suspended */
+			RegionView* rv = static_cast<RegionView*> (sd);
+			rv->region_changed (ARDOUR::Properties::start);
 		}
 		show_verbose_cursor_time (_primary->region ()->start ());
 	}
 }
 
 void
-RegionSlipContentsDrag::finished (GdkEvent*, bool movement_occurred)
+RegionSlipContentsDrag::finished (GdkEvent* event, bool movement_occurred)
 {
 	if (!movement_occurred) {
 		aborted (movement_occurred);
@@ -810,14 +821,37 @@ RegionSlipContentsDrag::finished (GdkEvent*, bool movement_occurred)
 	for (auto & sd: draggables) {
 		editing_context.add_command (new StatefulDiffCommand (sd->region ()));
 		sd->drag_end ();
+		if (Config->get_automation_follows_content()) {
+			AudioRegionView* arv = dynamic_cast<AudioRegionView*> (sd);
+			std::shared_ptr<AudioRegion> ar = dynamic_pointer_cast<AudioRegion> (sd->region());
+			/* shift envelope & fx lines */
+			if (ar) {
+				ar->move_automation_to_new_start ();
+			}
+			if (arv) {
+				arv->set_envelope_shifting (false);
+			}
+		}
+		sd->region ()->resume_property_changes ();
+
 	}
 
 	editing_context.commit_reversible_command ();
 }
 
 void
-RegionSlipContentsDrag::aborted (bool)
+RegionSlipContentsDrag::aborted (bool movement_occured)
 {
+	if (movement_occured) {
+		for (auto & sd: draggables) {
+			AudioRegionView* arv = dynamic_cast<AudioRegionView*> (sd);
+			if (Config->get_automation_follows_content() && arv) {
+				arv->set_envelope_shifting (false);
+			}
+			sd->region ()->resume_property_changes ();
+		}
+	}
+
 	/* ToDo: revert to the original region properties */
 	editing_context.abort_reversible_command ();
 }
@@ -2679,7 +2713,7 @@ VideoTimeLineDrag::finished (GdkEvent* /*event*/, bool movement_occurred)
 	XMLNode& after = ARDOUR_UI::instance ()->video_timeline->get_state ();
 	editing_context.session ()->add_command (new MementoCommand<VideoTimeLine> (*(ARDOUR_UI::instance ()->video_timeline), &before, &after));
 
-	for (list<AVDraggingView>::iterator i = _views.begin (); i != _views.end (); ++i) {	
+	for (list<AVDraggingView>::iterator i = _views.begin (); i != _views.end (); ++i) {
 	i->view->drag_end ();
 		i->view->region ()->resume_property_changes ();
 
@@ -2815,6 +2849,9 @@ TrimDrag::motion (GdkEvent* event, bool first_move)
 
 			if (arv) {
 				arv->temporarily_hide_envelope ();
+				if (_operation == StartTrim) {
+					arv->set_envelope_shifting (true);
+				}
 			}
 
 			if (insert_result.second) {
@@ -3026,13 +3063,15 @@ TrimDrag::finished (GdkEvent* event, bool movement_occurred)
 		editing_context.commit_reversible_command ();
 
 	} else {
-		/* no mouse movement */
-		if (adjusted_current_time (event) != adjusted_time (_drags->current_pointer_time (), event, false)) {
-			_editor.point_trim (event, adjusted_current_time (event));
-		}
+		/* no mouse movement. do nothing*/
 	}
 
 	for (auto const & dragging_view: _views) {
+		AudioRegionView* arv = dynamic_cast<AudioRegionView*> (dragging_view.view);
+		if (_operation == StartTrim && arv) {
+			arv->set_envelope_shifting (false);
+		}
+
 		dragging_view.view->region ()->resume_property_changes ();
 	}
 }
@@ -3054,6 +3093,10 @@ TrimDrag::aborted (bool movement_occurred)
 	}
 
 	for (list<DraggingView>::const_iterator i = _views.begin (); i != _views.end (); ++i) {
+		AudioRegionView* arv = dynamic_cast<AudioRegionView*> (i->view);
+		if (_operation == StartTrim && arv) {
+			arv->set_envelope_shifting (false);
+		}
 		i->view->region ()->resume_property_changes ();
 	}
 }
@@ -6554,20 +6597,29 @@ AutomationRangeDrag::motion (GdkEvent*, bool first_move)
 		if (!_ranges.empty ()) {
 			/* add guard points */
 			for (list<TimelineRange>::const_iterator i = _ranges.begin (); i != _ranges.end (); ++i) {
-				timepos_t const half = (i->start () + i->end ()).scale (ratio_t (1, 2));
+
 
 				for (list<Line>::iterator j = _lines.begin (); j != _lines.end (); ++j) {
-					if (j->range.first > i->start () || j->range.second < i->start ()) {
-						continue;
-					}
 
 					std::shared_ptr<AutomationList> the_list = j->line->the_list ();
+
+					/* convert range time domain to the line's time domain */
+					timepos_t start = i->start ();
+					timepos_t end = i->end ();
+					start.set_time_domain (the_list->time_domain ());
+					end.set_time_domain (the_list->time_domain ());
+
+					timepos_t const half = (start + end).scale (ratio_t (1, 2));
+
+					if (j->range.first > start || j->range.second < start) {
+						continue;
+					}
 
 					/* j is the line that this audio range starts in; fade into it;
 					 * 64 samples length plucked out of thin air.
 					 */
 
-					timepos_t a = i->start () + timepos_t (64);
+					timepos_t a = start + timepos_t (64);
 					if (a > half) {
 						a = half;
 					}
@@ -6576,13 +6628,8 @@ AutomationRangeDrag::motion (GdkEvent*, bool first_move)
 					 * relative to the line origin
 					*/
 
-					timepos_t p (j->line->get_origin ().distance (i->start ()));
+					timepos_t p (j->line->get_origin ().distance (start));
 					timepos_t q (j->line->get_origin ().distance (a));
-
-					/* XXX arguably ControlList::editor_add() should do this */
-
-					p.set_time_domain (the_list->time_domain ());
-					q.set_time_domain (the_list->time_domain ());
 
 					/* get start&end values to use for guard points *before* we add points to the list */
 					/* in the case where no data exists on the line, p_value = q_value = initial_value */
@@ -6601,28 +6648,32 @@ AutomationRangeDrag::motion (GdkEvent*, bool first_move)
 
 				/* same thing for the end */
 				for (list<Line>::iterator j = _lines.begin (); j != _lines.end (); ++j) {
-					if (j->range.first > i->end () || j->range.second < i->end ()) {
-						continue;
-					}
 
 					std::shared_ptr<AutomationList> the_list = j->line->the_list ();
+
+					/* convert range time domain to the line's time domain */
+					timepos_t start = i->start ();
+					timepos_t end = i->end ();
+					start.set_time_domain (the_list->time_domain ());
+					end.set_time_domain (the_list->time_domain ());
+
+					timepos_t const half = (start + end).scale (ratio_t (1, 2));
+
+					if (j->range.first > end || j->range.second < end) {
+						continue;
+					}
 
 					/* j is the line that this audio range starts in; fade out of it;
 					 * 64 samples length plucked out of thin air.
 					 */
 
-					timepos_t b = i->end ().earlier (timepos_t (64));
+					timepos_t b = end.earlier (timepos_t (64));
 					if (b < half) {
 						b = half;
 					}
 
 					timepos_t p (j->line->get_origin ().distance (b));
-					timepos_t q (j->line->get_origin ().distance (i->end ()));
-
-					/* XXX arguably ControlList::editor_add() should do this */
-
-					p.set_time_domain (the_list->time_domain ());
-					q.set_time_domain (the_list->time_domain ());
+					timepos_t q (j->line->get_origin ().distance (end));
 
 					XMLNode&   before = the_list->get_state ();
 					bool const add_p  = the_list->editor_add (p, value (the_list, p), false);
@@ -6641,6 +6692,7 @@ AutomationRangeDrag::motion (GdkEvent*, bool first_move)
 			 * points lists in the Line structs.
 			 */
 			for (list<Line>::iterator i = _lines.begin (); i != _lines.end (); ++i) {
+				std::shared_ptr<AutomationList> the_list = i->line->the_list ();
 				uint32_t const N = i->line->npoints ();
 				for (uint32_t j = 0; j < N; ++j) {
 					/* here's a control point on this line */
@@ -6654,7 +6706,17 @@ AutomationRangeDrag::motion (GdkEvent*, bool first_move)
 
 					/* see if it's inside a range */
 					list<TimelineRange>::const_iterator k = _ranges.begin ();
-					while (k != _ranges.end () && (k->start () >= w || k->end () <= w)) {
+					while (k != _ranges.end ()) {
+
+						/* convert range time domain to the line's time domain before comparing */
+						timepos_t start = k->start ();
+						timepos_t end = k->end ();
+						start.set_time_domain (the_list->time_domain ());
+						end.set_time_domain (the_list->time_domain ());
+						if (start < w && end > w) {
+							break;
+						}
+
 						++k;
 					}
 
@@ -6864,7 +6926,7 @@ MidiLollipopsSelectDrag::select_things (int button_state, timepos_t const& x1, t
 	double const origin = (base.item_to_canvas (base.get())).y0 - _bounding_item->canvas_origin().y;
 
 	bool notes_selected = _display->midi_view ().select_notes_by_velocity (x1, x2, _display->y_position_to_velocity(y2 - origin), _display->y_position_to_velocity(y1 - origin),
-	    Keyboard::modifier_state_contains (button_state, Keyboard::TertiaryModifier));
+	    ArdourKeyboard::selection_type (button_state));
 
 	if (!notes_selected) {
 		RubberbandSelectDrag::select_things (button_state, x1, x2, y1, y2, drag_in_progress);

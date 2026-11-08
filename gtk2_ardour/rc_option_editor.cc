@@ -2475,7 +2475,24 @@ MidiPortOptions::pretty_name_edit (std::string const & path, string const & new_
 	AudioEngine::instance()->set_port_pretty_name ((*iter)[midi_port_columns.fullname], new_text);
 }
 
+class NoteSpinOption : public SpinOption<int>
+{
+public:
+	NoteSpinOption (string const & id, string const & name, sigc::slot<int> g, sigc::slot<bool, int> s)
+		: SpinOption (id, name, g, s, 0, 127, 1, 12)
+	{
+		_note_name = Gtk::manage (new Gtk::Label (""));
+		box().pack_end (*_note_name, false, false);
+	}
+	void changed ()
+	{
+		SpinOption::changed ();
+		_note_name->set_text (ParameterDescriptor::midi_note_name (spin().get_value()).c_str());
 
+	}
+private:
+	Gtk::Label* _note_name;
+};
 
 RCOptionEditor::RCOptionEditor ()
 	: OptionEditorContainer (Config)
@@ -2487,6 +2504,7 @@ RCOptionEditor::RCOptionEditor ()
 {
 	UIConfiguration::instance().ParameterChanged.connect (sigc::mem_fun (*this, &RCOptionEditor::parameter_changed));
 	BoolOption* bo;
+	NoteSpinOption* nso;
 
 	/* GENERAL *****************************************************************/
 
@@ -2970,6 +2988,14 @@ RCOptionEditor::RCOptionEditor ()
 	add_option (_("Appearance/Waveform"), wfsh);
 	add_option (_("Appearance/Waveform"), new OptionEditorBlank ());
 
+	add_option (_("Appearance/Waveform"),
+		 new BoolOption (
+			 "apply-envelope-to-waveforms",
+			 _("Apply region gain envelope to waveforms"),
+			 sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_apply_envelope_to_waveforms),
+			 sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_apply_envelope_to_waveforms)
+			 ));
+
 	/* The names of these controls must be the same as those given in MixerStrip
 	   for the actual widgets being controlled.
 	*/
@@ -3261,22 +3287,6 @@ These settings will only take effect after %1 is restarted.\n\
 	add_option (_("Appearance"), new OptionEditorHeading (_("Graphics Acceleration")));
 #endif
 
-#ifdef __APPLE__
-	ComboOption<AppleNSGLViewMode>* glmode = new ComboOption<AppleNSGLViewMode> (
-		"nsgl-view-mode",
-		_("Render Canvas on openGL texture (requires restart)"),
-		sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_nsgl_view_mode),
-		sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_nsgl_view_mode)
-		);
-	glmode->add (NSGLHiRes, _("Yes, with Retina scaling"));
-	glmode->add (NSGLLoRes, _("Yes, low resolution"));
-	glmode->add (NSGLDisable, _("No"));
-
-	Gtkmm2ext::UI::instance()->set_tip (glmode->tip_widget(), string_compose (
-				_("Render editor canvas, on a openGL texture which may improve graphics performance.\nThis requires restarting %1 before having an effect"), PROGRAM_NAME));
-	add_option (_("Appearance"), glmode);
-#endif
-
 #ifndef USE_CAIRO_IMAGE_SURFACE
 	_cairo_image_surface = new BoolOption (
 		"cairo-image-surface",
@@ -3447,6 +3457,15 @@ These settings will only take effect after %1 is restarted.\n\
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_automation_follows_regions),
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_automation_follows_regions)
 		     ));
+
+	add_option (_("Editor"),
+		new BoolOption (
+		    "automation-follows-content",
+		    _("Move region automation and envelope when audio content is shifted"),
+		    sigc::mem_fun (*_rc_config, &RCConfiguration::get_automation_follows_content),
+		    sigc::mem_fun (*_rc_config, &RCConfiguration::set_automation_follows_content)
+		    ));
+
 
 	bo = new BoolOption (
 		     "new-automation-points-on-lane",
@@ -3800,24 +3819,22 @@ These settings will only take effect after %1 is restarted.\n\
 
 	add_option (_("MIDI"), new OptionEditorHeading (_("Default Visible Note Range")));
 
-	const std::string legal_midi_name_chars = S_("legal characters for MIDI note names|ABCDEFG#1234567890");
+	nso = new NoteSpinOption ("default-lower-midi-note",  _("Default lower visible MIDI note"),
+	                          sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_default_lower_midi_note),
+	                          sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_default_lower_midi_note)
+	                          );
+	add_option (_("MIDI"), nso);
 
-	mrl_option = new EntryOption ("lower-midi-note", _("Default lower visible MIDI note"),
-	                                           sigc::mem_fun (*this, &RCOptionEditor::get_default_lower_midi_note),
-	                                           sigc::mem_fun (*this, &RCOptionEditor::set_default_lower_midi_note));
-	mrl_option->set_valid_chars (legal_midi_name_chars);
-
-	mru_option = new EntryOption ("lower-midi-note", _("Default upper visible MIDI note"),
-	                                           sigc::mem_fun (*this, &RCOptionEditor::get_default_upper_midi_note),
-	                                           sigc::mem_fun (*this, &RCOptionEditor::set_default_upper_midi_note));
-	mru_option->set_valid_chars (legal_midi_name_chars);
+	nso = new NoteSpinOption ("default-upper-midi-note", _("Default upper visible MIDI note"),
+	                          sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_default_upper_midi_note),
+	                          sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_default_upper_midi_note)
+	                          );
+	add_option (_("MIDI"), nso);
 
 	SpinOption<int>* mnh_option = new SpinOption<int> ("max-note-height", _("Maximum note height"),
 	                                                   sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_max_note_height),
 	                                                   sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_max_note_height),
 	                                                   10, 40, 1, 5);
-	add_option (_("MIDI"), mrl_option);
-	add_option (_("MIDI"), mru_option);
 	add_option (_("MIDI"), mnh_option);
 
 	/* MIDI PORTs */
@@ -5540,42 +5557,4 @@ RCOptionEditor::get_state () const
 	XMLNode* node = new XMLNode (X_("Preferences"));
 	node->add_child_nocopy (Tabbable::get_state());
 	return *node;
-}
-
-std::string
-RCOptionEditor::get_default_lower_midi_note ()
-{
-	return ParameterDescriptor::midi_note_name (UIConfiguration::instance().get_default_lower_midi_note());
-}
-
-bool
-RCOptionEditor::set_default_lower_midi_note (std::string str)
-{
-	int note = ParameterDescriptor::midi_note_num (str);
-
-	if (note < 0) {
-		mru_option->set_state_from_config ();
-		return false;
-	}
-
-	return UIConfiguration::instance().set_default_lower_midi_note (note);
-}
-
-std::string
-RCOptionEditor::get_default_upper_midi_note ()
-{
-	return ParameterDescriptor::midi_note_name (UIConfiguration::instance().get_default_upper_midi_note());
-}
-
-bool
-RCOptionEditor::set_default_upper_midi_note (std::string str)
-{
-	int note = ParameterDescriptor::midi_note_num (str);
-
-	if (note < 0) {
-		mru_option->set_state_from_config ();
-		return false;
-	}
-
-	return UIConfiguration::instance().set_default_upper_midi_note (note);
 }

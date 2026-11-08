@@ -741,6 +741,7 @@ private:
 	Gtk::Menu track_selection_context_menu;
 
 	GdkEvent context_click_event;
+	bool     in_track_context_menu;
 
 	void popup_track_context_menu (int, int, ItemType, bool);
 	Gtk::Menu* build_track_context_menu ();
@@ -1091,6 +1092,7 @@ private:
 	bool button_press_handler (ArdourCanvas::Item*, GdkEvent*, ItemType);
 	bool button_press_handler_1 (ArdourCanvas::Item*, GdkEvent*, ItemType);
 	bool button_press_handler_2 (ArdourCanvas::Item*, GdkEvent*, ItemType);
+	bool button_press_handler_3 (ArdourCanvas::Item*, GdkEvent*, ItemType);
 	bool button_release_handler (ArdourCanvas::Item*, GdkEvent*, ItemType);
 	bool button_press_dispatch (GdkEventButton*);
 	bool button_release_dispatch (GdkEventButton*);
@@ -1878,7 +1880,6 @@ private:
 	void stop_canvas_autoscroll ();
 
 	/* trimming */
-	void point_trim (GdkEvent*, Temporal::timepos_t const &);
 
 	void trim_region_front();
 	void trim_region_back();
