@@ -487,11 +487,11 @@ def enoify (major, minor):
             return "\\n\\\"The Equatorial 7W33D2\\\"" # 2004 Collaborative
         if minor == 9:
             return "\\n\\\"Another Day on Earth\\\"" # 2005
-        if minor == 10:
-            return "\\n\\\"77 Million Paintings\\\"" # 2006
         if minor == 11:
-            return "\\n\\\"Beyond Even\\\"" # 2007 Collaborative
+            return "\\n\\\"77 Million Paintings\\\"" # 2006
         if minor == 12:
+            return "\\n\\\"Beyond Even\\\"" # 2007 Collaborative
+        if minor == 13:
             return "\\n\\\"Making Space \\\"" # 2010
     return "\\\"\\\""
 
